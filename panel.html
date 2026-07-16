@@ -93,7 +93,7 @@
   }
   button.act:hover { border-color: var(--accent); }
   /* 托管开着的时候按钮点亮（强调色描边），一眼能看出缰绳在 AI 手上 */
-  #tkBtn.on { border-color: var(--accent); color: var(--accent); }
+  #tkBtn.on, #gameBtn.on { border-color: var(--accent); color: var(--accent); }
 
   /* 设置层 */
   #setup { position: absolute; inset: 0; display: none; flex-direction: column; gap: 10px;
@@ -282,7 +282,8 @@
   <div id="head">
     <span class="name" id="aiName">TA</span>
     <span class="state" id="state">连接中</span>
-    <button class="act" id="tkBtn" style="display:none; padding:3px 8px; font-size:11px" title="让TA接管你的鼠标；操作时你先别碰鼠标。按 Esc 或再点一下退出">托管</button>
+    <button class="act" id="gameBtn" style="padding:3px 8px; font-size:11px" title="通过 NagiBridge 直接操作星露谷；不接管鼠标键盘">游戏</button>
+    <button class="act" id="tkBtn" style="display:none; padding:3px 8px; font-size:11px" title="让 TA 接管你的鼠标；操作时你先别碰鼠标。按 Esc 或再点一下退出">托管</button>
     <button class="act" id="fsExit" style="display:none; padding:3px 8px; font-size:11px" title="也可以按全屏快捷键退出">退出全屏</button>
   </div>
   <div id="msgs"></div>
@@ -312,6 +313,10 @@
     <input id="setStrip" placeholder="【记忆】 【心情】 <think>">
     <label>全屏快捷键（系统级；如 Ctrl+Alt+F、F9；留空关闭）</label>
     <input id="setHotkey" placeholder="Ctrl+Alt+F">
+    <label>NagiBridge 端口（0=自动扫描 7842–7849）</label>
+    <input id="setGamePort" inputmode="numeric" placeholder="0">
+    <label>目标玩家名（留空自动；双客户端时建议填写 AI 的 Farmhand 名）</label>
+    <input id="setGamePlayer" placeholder="AI玩家">
     <label>主题（JSON 文件，写法见 THEME.md）</label>
     <div class="btns" style="margin-top:0">
       <button class="act" id="thImport">导入主题</button>
@@ -571,15 +576,46 @@
         }
       });
     } else if (m.type === "vf_action") {
-      // 托管：AI 动鼠标 → 操作完自动补一张截图送回；每一步都在这留一条记录
-      petEvent("work", 5000);   // 操作期间：干活
-      vf.action(m.action).then((r) => {
-        wsSend({ type: "vf_shot", requestId: m.requestId, data: r.ok ? r.data : undefined, error: r.ok ? undefined : r.error, desc: r.desc });
+      // 兼容旧通道：game_observe/game_do 走游戏 MCP，其余动作仍走鼠标键盘。
+      const game = m.action && (m.action.type === "game_observe" || m.action.type === "game_do");
+      petEvent(game ? "game" : "work", 5000);   // 操作期间：干活/打游戏
+      (game ? vf.gameAction(m.action) : vf.action(m.action)).then((r) => {
+        wsSend({
+          type: "vf_shot", requestId: m.requestId,
+          data: r.ok ? r.data : undefined,
+          result: r.ok ? r.result : undefined,
+          error: r.ok ? undefined : r.error,
+          captureError: r.captureError,
+          desc: r.desc,
+        });
         if (r.ok) {
-          vf.flash();
-          addRow("sys", "托管：" + aiName() + (r.desc || "操作了一下"), r.data);
+          if (r.data) vf.flash();
+          addRow("sys", (game ? "游戏：" : "托管：") + aiName() + (r.desc || "操作了一下"), r.data);
+          if (r.captureError) addRow("sys", "操作成功，但补截图失败：" + r.captureError);
         } else {
           addRow("sys", aiName() + "想操作（" + ((m.action && m.action.type) || "?") + "），但没成功：" + r.error);
+        }
+      });
+    } else if (m.type === "vf_tool_call") {
+      // 新通道：云端只可请求两个紧凑工具；本地结果用结构化消息回传。
+      const tool = String(m.tool || "");
+      const action = { ...((m.arguments && typeof m.arguments === "object") ? m.arguments : {}), type: tool };
+      if (m.capture !== undefined) action.capture = !!m.capture;
+      petEvent("game", 5000);
+      vf.gameAction(action).then((r) => {
+        wsSend({
+          type: "vf_tool_result", requestId: m.requestId, callId: m.callId,
+          tool, ok: !!r.ok, result: r.ok ? r.result : undefined,
+          data: r.ok ? r.data : undefined, desc: r.desc,
+          captureError: r.captureError,
+          error: r.ok ? undefined : r.error,
+        });
+        if (r.ok) {
+          if (r.data) vf.flash();
+          addRow("sys", "游戏：" + aiName() + (r.desc || "操作了一下"), r.data);
+          if (r.captureError) addRow("sys", "操作成功，但补截图失败：" + r.captureError);
+        } else {
+          addRow("sys", "游戏工具 " + tool + " 没执行成功：" + r.error);
         }
       });
     } else if (m.type === "error") {
@@ -672,6 +708,30 @@
       : "托管已关闭" + (s.reason ? "（" + s.reason + "）" : ""));
   });
 
+  // ── 游戏托管：只接管星露谷里的目标角色，不碰系统鼠标键盘，也不要求全屏 ──
+  let gameOn = false;
+  $("gameBtn").addEventListener("click", async () => {
+    $("gameBtn").disabled = true;
+    try {
+      const r = await vf.gameControlSet(!gameOn);
+      if (r && r.error) addRow("sys", "游戏托管没开起来：" + r.error);
+    } finally {
+      $("gameBtn").disabled = false;
+    }
+  });
+  vf.onGameControl((s) => {
+    const changed = !!s.on !== gameOn;
+    gameOn = !!s.on;
+    $("gameBtn").classList.toggle("on", gameOn);
+    const target = s.target && (s.target.player || (":" + s.target.port));
+    $("gameBtn").title = gameOn
+      ? "游戏托管已开启" + (target ? "：" + target : "") + "；再点一次会停止移动并关闭"
+      : "通过 NagiBridge 直接操作星露谷；不接管鼠标键盘";
+    if (changed) addRow("sys", gameOn
+      ? "游戏托管已开启" + (target ? "（目标：" + target + "）" : "") + "。" + aiName() + "会直接操作游戏，鼠标键盘仍归你。"
+      : "游戏托管已关闭" + (s.reason ? "（" + s.reason + "）" : ""));
+  });
+
   // 面板头部拖动 = 整套（框+面板）一起走；全屏时只移面板自己（主进程路由）。
   // 增量按帧合批（rAF），别每次微动都发 IPC——那是卡顿之源
   $("head").addEventListener("pointerdown", (e) => {
@@ -707,6 +767,8 @@
     $("setSplit").value = (conf.render && conf.render.split) || "";
     $("setStrip").value = (conf.render && conf.render.strip) || "";
     $("setHotkey").value = conf.hotkeyFull || "";
+    $("setGamePort").value = (conf.game && conf.game.port) || 0;
+    $("setGamePlayer").value = (conf.game && conf.game.player) || "";
     $("setup").classList.add("on");
   }
   $("setCancel").addEventListener("click", () => $("setup").classList.remove("on"));
@@ -726,7 +788,15 @@
     conf.aiName = $("setName").value.trim();
     conf.render = { split: $("setSplit").value.trim(), strip: $("setStrip").value.trim() };
     conf.hotkeyFull = $("setHotkey").value.trim();
-    const r = await vf.confSet({ server: conf.server, token: conf.token, aiName: conf.aiName, render: conf.render, hotkeyFull: conf.hotkeyFull });
+    const rawPort = Number($("setGamePort").value.trim() || 0);
+    conf.game = {
+      port: Number.isInteger(rawPort) && rawPort >= 7842 && rawPort <= 7849 ? rawPort : 0,
+      player: $("setGamePlayer").value.trim(),
+    };
+    const r = await vf.confSet({
+      server: conf.server, token: conf.token, aiName: conf.aiName, render: conf.render,
+      hotkeyFull: conf.hotkeyFull, game: conf.game,
+    });
     buildRender();
     applyAiName();
     $("setup").classList.remove("on");
@@ -737,9 +807,11 @@
   // 启动
   vf.confGet().then((c) => {
     conf = c;
+    if (!conf.game) conf.game = { port: 0, player: "" };
     buildRender();
     applyAiName();
     connect();
+    vf.gameStatus(false);
   });
 </script>
 </body>

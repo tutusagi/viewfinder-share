@@ -5,6 +5,7 @@ const { app, BrowserWindow, ipcMain, screen, desktopCapturer, dialog, globalShor
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
+const { GameGateway } = require("./game-gateway");
 
 // 布局常量：必须与 frame.html 的 CSS 一致，截图按它算框内区域
 const TOOLBAR_H = 32;      // 顶部工具条高度（在框外面）
@@ -22,6 +23,8 @@ let conf = {
   // 公用渲染设置：split=气泡分割符（空=不分割）；strip=剥离标签列表（空格分隔，如 【记忆】 <think>）
   render: { split: "|||", strip: "【记忆】 【心情】 【状态】" },
   hotkeyFull: "Ctrl+Alt+F",   // 全屏切换全局快捷键（Electron accelerator 格式，空=不注册）
+  // NagiBridge：port=0 自动扫描 7842-7849；player 可按名字锁定真实 host/farmhand。
+  game: { port: 0, player: "" },
 };
 const confPath = () => path.join(app.getPath("userData"), "config.json");
 function loadConf() {
@@ -521,9 +524,47 @@ async function captureRegion(disp, interior) {
   return jpg.toString("base64");
 }
 
+// ── 星露谷游戏托管：云端只见两个紧凑动作，本机内部再走 MCP → NagiBridge ──
+let gameGateway = null;
+let gameControl = false;
+let gameActionBusy = false;
+
+function appendGameAudit(entry) {
+  try {
+    const file = path.join(app.getPath("userData"), "game-actions.jsonl");
+    fs.appendFileSync(file, JSON.stringify(entry) + "\n");
+  } catch (_) {}
+}
+
+function sendGameControl(reason) {
+  const status = gameGateway ? gameGateway.status() : { enabled: false, connected: false, available: [] };
+  const payload = { ...status, on: gameControl, reason: reason || "" };
+  if (panelWin) panelWin.webContents.send("vf-game-control", payload);
+  return payload;
+}
+
+async function setGameControl(value, reason) {
+  value = !!value;
+  if (!gameGateway) return { ok: false, error: "游戏网关还没有初始化" };
+  try {
+    const status = await gameGateway.setEnabled(value);
+    gameControl = !!status.enabled;
+    sendGameControl(reason);
+    return { ok: true, ...status, on: gameControl };
+  } catch (e) {
+    gameControl = false;
+    sendGameControl(e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
 // ── IPC ──
 app.whenReady().then(() => {
   loadConf();
+  gameGateway = new GameGateway({
+    config: conf.game,
+    onAudit: appendGameAudit,
+  });
 
   ipcMain.on("vf-ignore", (_e, ignore) => setIgnore(!!ignore));
   ipcMain.on("vf-dragging", (_e, v) => { rendererDragging = !!v; if (v) setIgnore(false); });
@@ -614,6 +655,45 @@ app.whenReady().then(() => {
 
   // 托管开关（面板头部按钮）：开的动作是异步的（要等 PowerShell 输入器就绪）
   ipcMain.handle("vf-takeover-set", (_e, v) => setTakeover(!!v));
+
+  // 游戏托管与鼠标托管相互独立：它直接操作 SMAPI，不要求全屏，也不占系统鼠标键盘。
+  ipcMain.handle("vf-game-control-set", (_e, v) => setGameControl(!!v));
+  ipcMain.handle("vf-game-status", async (_e, refresh) => {
+    if (refresh && gameGateway) await gameGateway.discover();
+    return { ok: true, ...sendGameControl() };
+  });
+
+  // 云端只允许调用 game_observe / game_do。实际 NagiBridge 端点不会越过 Electron 主进程。
+  ipcMain.handle("vf-game-action", async (_e, action) => {
+    if (!gameControl) return { ok: false, error: "游戏托管没有开启" };
+    if (gameActionBusy) return { ok: false, error: "上一个游戏操作还没做完" };
+    const tool = String(action && action.type || "");
+    if (tool !== "game_observe" && tool !== "game_do") return { ok: false, error: "不允许的游戏工具：" + tool };
+    gameActionBusy = true;
+    try {
+      const args = { ...(action || {}) };
+      delete args.type; delete args.capture; delete args.wait_ms;
+      const result = await gameGateway.call(tool, args);
+      const shouldCapture = action && action.capture === true
+        || (tool === "game_do" && (!action || action.capture !== false));
+      let data, captureError;
+      if (shouldCapture) {
+        const delay = Math.min(Math.max(Number(action && action.wait_ms) || 250, 50), 3000);
+        await sleep(delay);
+        try { data = await captureInterior(); }
+        catch (e) { captureError = e.message; }
+      }
+      const desc = result && result.desc
+        ? result.desc
+        : (tool === "game_observe" ? "查看了游戏状态" : "执行了游戏操作");
+      // 游戏操作成功后即使截图失败也不能报整个动作失败，否则模型可能重复执行写操作。
+      return { ok: true, result, data, captureError, desc };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    } finally {
+      gameActionBusy = false;
+    }
+  });
 
   // 单步注入：换算坐标 → 调输入器 → 返回中文描述（不截图、不等待，供单步/批量共用）
   const numOf = (v, name) => {
@@ -760,8 +840,12 @@ app.whenReady().then(() => {
     if (panelWin) panelWin.webContents.send("vf-flash");
   });
 
-  ipcMain.handle("conf-get", () => ({ server: conf.server, token: conf.token, aiName: conf.aiName, render: conf.render, hotkeyFull: conf.hotkeyFull }));
-  ipcMain.handle("conf-set", (_e, { server, token, aiName, render, hotkeyFull }) => {
+  ipcMain.handle("conf-get", () => ({
+    server: conf.server, token: conf.token, aiName: conf.aiName,
+    render: conf.render, hotkeyFull: conf.hotkeyFull,
+    game: conf.game || { port: 0, player: "" },
+  }));
+  ipcMain.handle("conf-set", (_e, { server, token, aiName, render, hotkeyFull, game }) => {
     if (server) conf.server = String(server).trim().replace(/\/+$/, "");
     conf.token = String(token || "").trim();
     if (aiName !== undefined) conf.aiName = String(aiName || "").trim();
@@ -770,6 +854,10 @@ app.whenReady().then(() => {
     if (hotkeyFull !== undefined) {
       conf.hotkeyFull = String(hotkeyFull || "").trim();
       hotkeyOk = registerHotkey();
+    }
+    if (game !== undefined && gameGateway) {
+      conf.game = gameGateway.configure(game);
+      sendGameControl("游戏目标设置已更新");
     }
     saveConf();
     return { ok: true, hotkeyOk };
@@ -795,5 +883,9 @@ app.whenReady().then(() => {
   registerHotkey();
 });
 
-app.on("will-quit", () => { globalShortcut.unregisterAll(); stopInputHelper(); });
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
+  stopInputHelper();
+  if (gameGateway) gameGateway.close();
+});
 app.on("window-all-closed", () => app.quit());
