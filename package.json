@@ -1,0 +1,36 @@
+{
+  "name": "viewfinder",
+  "version": "1.4.2",
+  "description": "桌面取景框：AI 能看到的那一小块屏幕",
+  "main": "main.js",
+  "author": "tutusagi",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "app.viewfinder.desktop",
+    "productName": "取景框",
+    "files": [
+      "main.js",
+      "preload.js",
+      "frame.html",
+      "panel.html"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "取景框-${version}.exe",
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "requestExecutionLevel": "user"
+    }
+  }
+}

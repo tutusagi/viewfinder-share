@@ -1,0 +1,308 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* 布局常量：--toolbar-h 与 main.js TOOLBAR_H 对齐（不可主题化）；
+     其余变量都是主题接口，见 THEME.md */
+  :root {
+    --toolbar-h: 32px;
+    --frame-w: 3px;                       /* 框线宽度（截图裁剪区会自动避开） */
+    --frame-line: #9fe8e0;                /* 昼：荧光（同夜，深色背景也看得清） */
+    --frame-glow: 0 0 10px rgba(159,232,224,.55);  /* 框光晕 */
+    --frame-border-image: none;           /* 花边：border-image 完整简写 */
+    --flash-color: rgba(255,255,255,.95); /* 快门闪光色 */
+    --card: rgba(255,255,255,.92);        /* 胶囊底色 */
+    --ink: #333;
+    --sub: #999;
+    --ui-font: "幼圆", "YouYuan", "Microsoft YaHei UI", sans-serif;
+  }
+  html.night {
+    --frame-line: #9fe8e0;                /* 夜：雪夜荧光 */
+    --frame-glow: 0 0 10px rgba(159,232,224,.55);
+    --card: rgba(16,20,24,.92);
+    --ink: #dfe8e6;
+    --sub: #6b7f7c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden;
+    font-family: var(--ui-font); }
+
+  /* 顶部工具条：一颗小胶囊，贴在框的上方 */
+  #toolbar {
+    position: absolute; top: 0; left: 0; right: 0; height: var(--toolbar-h);
+    display: flex; align-items: center; justify-content: flex-start;
+    pointer-events: none;
+  }
+  #pill {
+    pointer-events: auto;
+    display: flex; align-items: center; gap: 2px;
+    margin-left: 6px; padding: 3px 6px;
+    background: var(--card); border: 1px solid var(--frame-line);
+    border-radius: 14px; box-shadow: var(--frame-glow);
+    cursor: grab;
+    -webkit-app-region: drag;      /* 移动走系统原生拖拽（丝滑），按钮单独豁免 */
+  }
+  #pill button, #pill .dot { -webkit-app-region: no-drag; }
+  #pill .dot { width: 7px; height: 7px; border-radius: 50%; background: #c9a13b; margin: 0 3px; }
+  #pill .dot.ok { background: #4caf7d; }
+  #pill .dot.bad { background: #c94b3b; }
+  #pill button {
+    border: 0; background: transparent; color: var(--ink);
+    font: inherit; font-size: 12px; padding: 2px 7px; border-radius: 10px; cursor: pointer;
+  }
+  #pill button:hover { background: rgba(127,127,127,.15); }
+  #pill button.on-rec { color: #c94b3b; font-variant-numeric: tabular-nums; }
+  #pill button:disabled { opacity: .35; cursor: default; }
+
+  /* 取景框本体：只有边线，中间是洞（点击穿透） */
+  #frame {
+    position: absolute; left: 0; right: 0; top: var(--toolbar-h); bottom: 0;
+    border: var(--frame-w) solid var(--frame-line);
+    border-image: var(--frame-border-image);
+    border-radius: 2px;
+    box-shadow: var(--frame-glow), inset var(--frame-glow);
+    cursor: grab;
+    -webkit-app-region: drag;      /* 边线拖动 = 原生窗口拖拽 */
+  }
+  #frame.flash { animation: flash .45s ease-out; }
+  @keyframes flash {
+    0%   { box-shadow: 0 0 0 4px var(--flash-color), 0 0 26px 8px var(--flash-color); }
+    100% { box-shadow: var(--frame-glow), inset var(--frame-glow); }
+  }
+  /* 四角小角标：取景器的仪式感 */
+  .corner { position: absolute; width: 16px; height: 16px; border: 0 solid var(--frame-line); }
+  .corner.nw { left: -3px; top: calc(var(--toolbar-h) - 3px); border-left-width: 6px; border-top-width: 6px; }
+  .corner.ne { right: -3px; top: calc(var(--toolbar-h) - 3px); border-right-width: 6px; border-top-width: 6px; }
+  .corner.sw { left: -3px; bottom: -3px; border-left-width: 6px; border-bottom-width: 6px; }
+  .corner.se { right: -3px; bottom: -3px; border-right-width: 6px; border-bottom-width: 6px; }
+
+  /* 缩放热区只在四个角（边线整条都是拖动，不再误触缩放） */
+  .grip { position: absolute; z-index: 5; -webkit-app-region: no-drag; }
+  .g-nw { left: -6px; top: calc(var(--toolbar-h) - 6px); width: 26px; height: 26px; cursor: nwse-resize; }
+  .g-ne { right: -6px; top: calc(var(--toolbar-h) - 6px); width: 26px; height: 26px; cursor: nesw-resize; }
+  .g-sw { left: -6px; bottom: -6px; width: 26px; height: 26px; cursor: nesw-resize; }
+  .g-se { right: -6px; bottom: -6px; width: 26px; height: 26px; cursor: nwse-resize; }
+
+  /* 锁定态：框对鼠标完全透明，只剩胶囊能点；边线淡一点表示"睡着了" */
+  html.locked .grip { display: none; }
+  html.locked #frame { cursor: default; opacity: .75; -webkit-app-region: no-drag; }
+  html.locked #pill { -webkit-app-region: no-drag; }
+
+  /* 全屏态：框冻结（大小位置由主进程管），角标热区收起 */
+  html.fullscreen .grip { display: none; }
+  html.fullscreen #frame { cursor: default; }
+</style>
+<style id="themeCss"></style>
+</head>
+<body>
+  <div id="toolbar">
+    <div id="pill" class="hot">
+      <span class="dot" id="dot"></span>
+      <button id="btnShot" title="截下框里的画面发给 AI">截图</button>
+      <button id="btnRec" title="把框里的画面录成视频，存在这台电脑的「视频」文件夹里，不会上传到服务器">录屏</button>
+      <button id="btnFull" title="取景框铺满整个屏幕，对话小窗可以拖到任意位置">全屏</button>
+      <button id="btnLock" title="锁定后位置大小不能动，鼠标直接穿过取景框">锁定</button>
+      <button id="btnSet" title="设置">设置</button>
+      <button id="btnQuit" title="退出">关</button>
+    </div>
+  </div>
+  <div id="frame" class="hot"></div>
+  <div class="corner nw"></div><div class="corner ne"></div>
+  <div class="corner sw"></div><div class="corner se"></div>
+  <div class="grip g-nw hot" data-edge="nw"></div>
+  <div class="grip g-ne hot" data-edge="ne"></div>
+  <div class="grip g-sw hot" data-edge="sw"></div>
+  <div class="grip g-se hot" data-edge="se"></div>
+
+<script>
+  // 昼夜 + 主题：7-19 点用主题 day 段，其余 night 段（没有 night 就用 day）；每分钟复查。
+  // 主题变量直接写到 <html> 行内样式上，天然盖过样式表默认值；无主题 = 内置默认外观。
+  let themeObj = null;
+  function applyTheme() {
+    const h = new Date().getHours();
+    const night = h < 7 || h >= 19;
+    document.documentElement.classList.toggle("night", night);
+    const root = document.documentElement;
+    for (const k of [...root.style]) if (k.startsWith("--")) root.style.removeProperty(k);
+    const sec = themeObj ? ((night ? themeObj.night : themeObj.day) || themeObj.day || {}) : {};
+    for (const [k, v] of Object.entries(sec)) if (k.startsWith("--")) root.style.setProperty(k, String(v));
+    document.getElementById("themeCss").textContent = (themeObj && themeObj.css) || "";
+    // 框线实际宽度 + 胶囊宽度报给主进程：截图裁剪避开框线/花边，穿透判定对准胶囊
+    requestAnimationFrame(() => {
+      const w = parseFloat(getComputedStyle(document.getElementById("frame")).borderTopWidth) || 3;
+      vf.setInset(Math.ceil(w));
+      reportPill();
+    });
+  }
+  vf.onTheme((t) => { themeObj = t; applyTheme(); });
+  applyTheme(); setInterval(applyTheme, 60000);
+
+  // 锁定：位置大小全冻结，鼠标穿过取景框，只剩胶囊可点（解锁/截图）
+  let locked = false;
+  function applyLock(v) {
+    locked = v;
+    document.documentElement.classList.toggle("locked", v);
+    document.getElementById("btnLock").textContent = v ? "解锁" : "锁定";
+    requestAnimationFrame(reportPill);   // 按钮文字变了，胶囊宽度跟着变
+  }
+  vf.onLock(applyLock);
+  document.getElementById("btnLock").addEventListener("click", () => vf.lockSet(!locked));
+
+  // 全屏：框铺满屏幕（移动/缩放冻结），对话小窗自由飞
+  let fullscreen = false;
+  vf.onFullscreen((v) => {
+    fullscreen = v;
+    document.documentElement.classList.toggle("fullscreen", v);
+    document.getElementById("btnFull").textContent = v ? "退出全屏" : "全屏";
+    requestAnimationFrame(reportPill);
+  });
+  document.getElementById("btnFull").addEventListener("click", () => vf.fullscreenSet(!fullscreen));
+
+  // 点击穿透由主进程光标轮询判定（1.1.2 教训：app-region:drag 元素收不到鼠标事件，
+  // mouseover 方案在拖拽区上失效）。渲染进程只上报两件事：胶囊宽度、缩放拖拽进行中。
+  let dragging = false;
+  function reportPill() {
+    const w = document.getElementById("pill").offsetWidth;
+    if (w) vf.pillWidth(w + 10);   // +10 = 左边距余量
+  }
+
+  // 移动已交给系统原生拖拽（-webkit-app-region: drag）；这里只剩四角缩放。
+  // pointer capture 保证指针跑出窗外也不断；增量按帧合批（rAF），不做每次微动就发 IPC 的蠢事
+  function bindResize(g) {
+    g.addEventListener("pointerdown", (e) => {
+      if (locked || fullscreen) return;
+      e.preventDefault();
+      dragging = true;
+      vf.draggingSet(true);
+      g.setPointerCapture(e.pointerId);
+      let lx = e.screenX, ly = e.screenY, accX = 0, accY = 0, scheduled = false;
+      const edge = g.dataset.edge;
+      const flush = () => {
+        scheduled = false;
+        if (accX || accY) { vf.resizeBy(edge, accX, accY); accX = 0; accY = 0; }
+      };
+      const move = (ev) => {
+        accX += ev.screenX - lx; accY += ev.screenY - ly;
+        lx = ev.screenX; ly = ev.screenY;
+        if (!scheduled) { scheduled = true; requestAnimationFrame(flush); }
+      };
+      const up = () => {
+        g.removeEventListener("pointermove", move);
+        g.removeEventListener("pointerup", up);
+        g.removeEventListener("pointercancel", up);
+        flush();
+        dragging = false;
+        vf.draggingSet(false);
+        vf.geomSave();
+      };
+      g.addEventListener("pointermove", move);
+      g.addEventListener("pointerup", up);
+      g.addEventListener("pointercancel", up);
+    });
+  }
+  document.querySelectorAll(".grip").forEach(bindResize);
+
+  // ── 录屏（纯本地）：抓本屏视频流 → canvas 裁到框内 → MediaRecorder → 每秒一块送主进程落盘 ──
+  // 文件存「视频/取景框」，不经过服务器、不发给 AI。开录自动锁定取景框：
+  // 框动不了，画面和框内永远一致；收工恢复开录前的锁定状态（本来就锁着就保持锁着）。
+  const btnRec = document.getElementById("btnRec");
+  let rec = null;
+  function recLabel() {
+    btnRec.classList.toggle("on-rec", !!rec);
+    if (!rec) { btnRec.textContent = "录屏"; return; }
+    const s = Math.floor((Date.now() - rec.t0) / 1000);
+    btnRec.textContent = "停 " + Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+  async function recStart() {
+    btnRec.disabled = true;
+    let stream = null, draw = null;   // 提出来：半路抛错也能收干净
+    try {
+      const info = await vf.recInfo();
+      if (!info.ok) throw new Error(info.error);
+      const gum = (withAudio) => navigator.mediaDevices.getUserMedia({
+        audio: withAudio ? { mandatory: { chromeMediaSource: "desktop" } } : false,
+        video: { mandatory: { chromeMediaSource: "desktop", chromeMediaSourceId: info.sourceId } },
+      });
+      try { stream = await gum(true); }       // Windows 顺带录系统声音
+      catch (_) { stream = await gum(false); } // 拿不到声音就录无声的
+      const video = document.createElement("video");
+      video.srcObject = stream; video.muted = true;
+      await video.play();
+      // 流像素 ↔ 屏幕逻辑坐标换算（同截图），内缩 1px 防框线入镜，canvas 尺寸取偶数编码器友好
+      const kx = video.videoWidth / info.display.size.width, ky = video.videoHeight / info.display.size.height;
+      const it = info.interior, db = info.display.bounds;
+      const sx = Math.max(0, Math.round((it.x - db.x) * kx) + 1), sy = Math.max(0, Math.round((it.y - db.y) * ky) + 1);
+      const sw = Math.min(Math.round(it.width * kx) - 2, video.videoWidth - sx);
+      const sh = Math.min(Math.round(it.height * ky) - 2, video.videoHeight - sy);
+      if (sw < 8 || sh < 8) throw new Error("框内区域太小");
+      const cv = document.createElement("canvas");
+      cv.width = sw - (sw % 2); cv.height = sh - (sh % 2);
+      const ctx = cv.getContext("2d");
+      draw = setInterval(() => ctx.drawImage(video, sx, sy, sw, sh, 0, 0, cv.width, cv.height), 33);
+      const out = cv.captureStream(30);
+      for (const t of stream.getAudioTracks()) out.addTrack(t);
+      const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+        .find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
+      const fr = await vf.recFileStart();
+      if (!fr.ok) throw new Error(fr.error);
+      const recorder = new MediaRecorder(out, { mimeType: mime, videoBitsPerSecond: 8e6 });
+      rec = { recorder, stream, video, draw, t0: Date.now(), q: Promise.resolve(), timer: setInterval(recLabel, 1000) };
+      recorder.ondataavailable = (e) => {
+        if (!e.data || !e.data.size || !rec) return;
+        // 块必须按序落盘：排进一条 promise 链，慢一拍也不乱序
+        rec.q = rec.q.then(() => e.data.arrayBuffer()).then((b) => vf.recChunk(new Uint8Array(b))).catch(() => {});
+      };
+      recorder.onstop = async () => {
+        const r = rec; rec = null;
+        clearInterval(r.draw); clearInterval(r.timer);
+        r.stream.getTracks().forEach((t) => t.stop());
+        r.video.srcObject = null;
+        document.getElementById("btnLock").disabled = false;
+        if (!r.prevLock) vf.lockSet(false);   // 恢复开录前的锁定状态
+        await r.q;                      // 尾块写完再收官
+        await vf.recFileEnd(true);      // 关文件 + 打开所在文件夹
+        recLabel(); requestAnimationFrame(reportPill);
+      };
+      recorder.start(1000);
+      rec.prevLock = locked;
+      if (!locked) vf.lockSet(true);                            // 开录自动锁定
+      document.getElementById("btnLock").disabled = true;       // 录屏中不许解锁，框跑了画面就对不上了
+      recLabel(); requestAnimationFrame(reportPill);
+    } catch (e) {
+      if (rec) {
+        clearInterval(rec.timer);
+        document.getElementById("btnLock").disabled = false;
+        if (rec.prevLock === false) vf.lockSet(false);
+        rec = null;
+      }
+      if (draw) clearInterval(draw);
+      if (stream) try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+      vf.recFileEnd(false);             // 半截文件不留
+      btnRec.textContent = "录不了";
+      setTimeout(() => { recLabel(); requestAnimationFrame(reportPill); }, 1800);
+    } finally { btnRec.disabled = false; }
+  }
+  btnRec.addEventListener("click", () => { if (rec) rec.recorder.stop(); else recStart(); });
+  // 进全屏时框整个隐身、渲染进程被节流，画面会卡成幻灯片——先把录制体面收掉
+  vf.onFullscreen((v) => { if (v && rec) rec.recorder.stop(); });
+
+  // 工具条按钮：转发给面板执行（WS 在面板那边）
+  document.getElementById("btnShot").addEventListener("click", () => vf.panelCmd("shot"));
+  document.getElementById("btnSet").addEventListener("click", () => vf.panelCmd("settings"));
+  document.getElementById("btnQuit").addEventListener("click", () => vf.quit());
+
+  // 快门闪光
+  vf.onFlash(() => {
+    const f = document.getElementById("frame");
+    f.classList.remove("flash"); void f.offsetWidth; f.classList.add("flash");
+  });
+
+  // 连接状态点
+  vf.onConnState((s) => {
+    const d = document.getElementById("dot");
+    d.className = "dot " + (s === "ok" ? "ok" : s === "bad" ? "bad" : "");
+  });
+</script>
+</body>
+</html>

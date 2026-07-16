@@ -1,0 +1,746 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  /* 全部是主题接口变量，见 THEME.md */
+  :root {
+    --card: rgba(255,255,255,.96);   /* 卡片底色 */
+    --line: #e8e6e2;                 /* 描线 */
+    --ink: #333;                     /* 正文文字 */
+    --sub: #9a968f;                  /* 次要文字 */
+    --me-bg: #f2f0ec;                /* 我的气泡底色 */
+    --accent: #2b2b2b;               /* 强调色：AI 气泡左线、输入框焦点 */
+    --glow: 0 6px 24px rgba(0,0,0,.10);  /* 卡片阴影/光晕 */
+    --radius: 16px;                  /* 卡片圆角 */
+    --flash-color: rgba(255,255,255,.9); /* 快门闪光色 */
+    --ui-font: "幼圆", "YouYuan", "Microsoft YaHei UI", sans-serif;
+    --ai-font: "Source Han Sans SC Light", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei UI Light", "Microsoft YaHei UI", sans-serif;
+    --ai-weight: 300;                /* AI 消息字重 */
+    --pet-body: #DE886D;             /* 小螃蟹壳色 */
+    --pet-glow: none;                /* 小螃蟹夜间荧光 */
+  }
+  html.night {
+    --card: rgba(16,20,24,.96);
+    --line: #243032;
+    --ink: #dfe8e6;
+    --sub: #6b7f7c;
+    --me-bg: #1b2427;
+    --accent: #9fe8e0;
+    --glow: 0 0 14px rgba(159,232,224,.28);
+    --pet-glow: drop-shadow(0 0 3px rgba(159,232,224,.35));
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden;
+    font-family: var(--ui-font); color: var(--ink); }
+  body { display: flex; flex-direction: column; }
+  /* 卡片上沿的透明地带：小螃蟹的活动范围（高度与 main.js 的 PET_H 一致） */
+  #petzone { height: 48px; flex: none; position: relative; }
+  #card {
+    display: flex; flex-direction: column; flex: 1; min-height: 0; position: relative;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--glow); overflow: hidden;
+  }
+  #card.flash { animation: cardflash .45s ease-out; }
+  @keyframes cardflash {
+    0% { box-shadow: 0 0 0 3px var(--flash-color), 0 0 22px 6px var(--flash-color); }
+    100% { box-shadow: var(--glow); }
+  }
+
+  #head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px; border-bottom: 1px solid var(--line);
+    cursor: grab; user-select: none;
+  }
+  #head .name { font-size: 14px; letter-spacing: 2px; }
+  #head .state { font-size: 11px; color: var(--sub); margin-left: auto; }
+
+  #msgs { flex: 1; overflow-y: auto; padding: 10px 12px; }
+  #msgs::-webkit-scrollbar { width: 4px; }
+  #msgs::-webkit-scrollbar-thumb { background: var(--line); border-radius: 2px; }
+  .row { display: flex; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  .row.me { justify-content: flex-end; }
+  .bubble { max-width: 86%; font-size: 13px; line-height: 1.55; word-break: break-word; white-space: pre-wrap; }
+  .bubble em { font-style: italic; opacity: .88; }   /* *动作/心声* 惯用符号 */
+  .bubble img { display: block; max-width: 100%; max-height: 90px; border-radius: 8px; border: 1px solid var(--line); margin-top: 4px; }
+  .me .bubble { background: var(--me-bg); border-radius: 12px 12px 3px 12px; padding: 7px 11px; }
+  .ai .bubble {
+    font-family: var(--ai-font); font-weight: var(--ai-weight);
+    border-left: 2px solid var(--accent); padding: 2px 0 2px 10px;
+  }
+  .sys { font-size: 11px; color: var(--sub); text-align: center; }
+  #typing { display: none; font-size: 11px; color: var(--sub); padding: 0 14px 6px; }
+  #typing.on { display: block; }
+
+  /* 暂存截图预览条：截完先躺这儿，配好文字点发送才发出 */
+  #pend { display: none; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+  #pend.on { display: flex; }
+  #pend img { height: 44px; border-radius: 6px; border: 1px solid var(--line); }
+  #pend .note { font-size: 11px; color: var(--sub); flex: 1; }
+  #pend button { border: 0; background: transparent; color: var(--sub); font: inherit; font-size: 12px; cursor: pointer; }
+  #pend button:hover { color: var(--ink); }
+
+  #inputbar { display: flex; gap: 6px; padding: 10px 12px 12px; border-top: 1px solid var(--line); }
+  #inp {
+    flex: 1; border: 1px solid var(--line); background: transparent; color: var(--ink);
+    border-radius: 12px; padding: 7px 11px; font: inherit; font-size: 13px; outline: none;
+  }
+  #inp:focus { border-color: var(--accent); }
+  button.act {
+    border: 1px solid var(--line); background: transparent; color: var(--ink);
+    border-radius: 12px; padding: 7px 11px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button.act:hover { border-color: var(--accent); }
+  /* 托管开着的时候按钮点亮（强调色描边），一眼能看出缰绳在 AI 手上 */
+  #tkBtn.on { border-color: var(--accent); color: var(--accent); }
+
+  /* 设置层 */
+  #setup { position: absolute; inset: 0; display: none; flex-direction: column; gap: 10px;
+    background: var(--card); border-radius: var(--radius); padding: 20px 18px; overflow-y: auto; }
+  #setup.on { display: flex; }
+  #setup h3 { font-size: 14px; font-weight: normal; letter-spacing: 2px; }
+  #setup label { font-size: 11px; color: var(--sub); }
+  #setup input { border: 1px solid var(--line); background: transparent; color: var(--ink);
+    border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13px; outline: none; width: 100%; }
+  #setup .btns { display: flex; gap: 8px; margin-top: auto; }
+  #setup .hint { font-size: 11px; color: var(--sub); line-height: 1.6; }
+
+  /* ── 小螃蟹（Clawd 体格，纯 SVG+CSS，主题可通过 #petzone{display:none} 关掉） ── */
+  #pet { position: absolute; bottom: -3px; width: 69px; height: 48px; cursor: pointer; }
+  #pet svg { width: 100%; height: 100%; filter: var(--pet-glow); shape-rendering: crispEdges; }
+  #pet.flip svg { transform: scaleX(-1); }
+  .p-x { display: none; }                      /* 表情道具默认全藏 */
+  #pet.think .p-dots, #pet.love .p-hearts, #pet.sad .p-tear, #pet.angry .p-mark,
+  #pet.surprised .p-ex, #pet.sleepy .p-zzz,
+  #pet.love .p-blush, #pet.shy .p-blush { display: block; }
+
+  /* transform-origin 以 viewBox 左上角(-4,0)为基准，故 x 都要 +4 */
+  .p-body { transform-origin: 11.5px 15px; animation: pt-bob 2.6s ease-in-out infinite; }
+  .p-eyes { transform-origin: 11.5px 9px; animation: pt-blink 4s infinite; }
+  .p-cl { transform-origin: 6px 10px; }
+  .p-cr { transform-origin: 17px 10px; }
+  .p-la, .p-lb { transform-origin: 11.5px 13px; }
+  @keyframes pt-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-.5px); } }
+  @keyframes pt-blink { 0%,91%,98%,100% { transform: scaleY(1); } 94% { transform: scaleY(.12); } }
+
+  /* 走路：步足两组交替 */
+  #pet.walk .p-body { animation: pt-trot .4s ease-in-out infinite; }
+  #pet.walk .p-la { animation: pt-step .4s linear infinite; }
+  #pet.walk .p-lb { animation: pt-step .4s linear infinite .2s; }
+  @keyframes pt-trot { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-.4px); } }
+  @keyframes pt-step { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-.8px); } }
+
+  /* 思考：眼睛往上瞟 + 头顶冒点点 */
+  #pet.think .p-eyes { animation: none; transform: translate(-.5px, -.6px); }
+  #pet.think .p-dots rect { opacity: 0; animation: pt-dot 1.8s infinite; }
+  #pet.think .p-dots rect:nth-child(2) { animation-delay: .3s; }
+  #pet.think .p-dots rect:nth-child(3) { animation-delay: .6s; }
+  @keyframes pt-dot { 0%,70%,100% { opacity: 0; } 15%,55% { opacity: 1; } }
+
+  /* 开心：蹦跳 + 举钳 */
+  #pet.happy .p-body { animation: pt-hop .9s ease-in-out infinite; }
+  #pet.happy .p-cl { animation: pt-cheer-l .9s ease-in-out infinite; }
+  #pet.happy .p-cr { animation: pt-cheer-r .9s ease-in-out infinite; }
+  @keyframes pt-hop { 0%,55%,100% { transform: translateY(0); } 12% { transform: translateY(0) scaleY(.93); }
+    32% { transform: translateY(-2.6px); } 48% { transform: translateY(0) scaleY(.96); } }
+  @keyframes pt-cheer-l { 0%,55%,100% { transform: rotate(0); } 30% { transform: rotate(30deg); } }
+  @keyframes pt-cheer-r { 0%,55%,100% { transform: rotate(0); } 30% { transform: rotate(-30deg); } }
+
+  /* 贴贴：脸红 + 双钳举高晃 + 飘小心心 */
+  #pet.love .p-body { animation: pt-sway 1.6s ease-in-out infinite; }
+  #pet.love .p-cl { animation: pt-hug-l 1.6s ease-in-out infinite; }
+  #pet.love .p-cr { animation: pt-hug-r 1.6s ease-in-out infinite; }
+  #pet.love .p-hearts g { animation: pt-heart 2s ease-out infinite; }
+  #pet.love .p-hearts g:nth-child(2) { animation-delay: 1s; }
+  @keyframes pt-sway { 0%,100% { transform: rotate(-2.5deg); } 50% { transform: rotate(2.5deg); } }
+  @keyframes pt-hug-l { 0%,100% { transform: rotate(22deg); } 50% { transform: rotate(34deg); } }
+  @keyframes pt-hug-r { 0%,100% { transform: rotate(-22deg); } 50% { transform: rotate(-34deg); } }
+  @keyframes pt-heart { 0% { transform: translateY(1.5px); opacity: 0; } 25% { opacity: 1; }
+    100% { transform: translateY(-3.5px); opacity: 0; } }
+
+  /* 难过：整个蔫下去 + 掉小水滴 */
+  #pet.sad .p-body { animation: pt-mope 3.2s ease-in-out infinite; }
+  #pet.sad .p-eyes { transform: translateY(.5px); }
+  #pet.sad .p-tear { animation: pt-tear 2.4s ease-in infinite; }
+  @keyframes pt-mope { 0%,100% { transform: translateY(.9px) scaleY(.94); } 50% { transform: translateY(1.1px) scaleY(.93); } }
+  @keyframes pt-tear { 0% { transform: translateY(0); opacity: 0; } 15% { opacity: .95; }
+    70%,100% { transform: translateY(3px); opacity: 0; } }
+
+  /* 生气：原地发抖 + 青筋 */
+  #pet.angry .p-body { animation: pt-fume .3s linear infinite; }
+  #pet.angry .p-mark { animation: pt-pulse 1s ease-in-out infinite; }
+  @keyframes pt-fume { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-.5px); } 75% { transform: translateX(.5px); } }
+  @keyframes pt-pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+  /* 惊讶：跳起来 + 头顶叹号 */
+  #pet.surprised .p-body { animation: pt-jolt 1.5s ease-out infinite; }
+  #pet.surprised .p-eyes { animation: none; transform: scale(1.3); }
+  #pet.surprised .p-ex { animation: pt-pulse .75s ease-in-out infinite; }
+  @keyframes pt-jolt { 0% { transform: translateY(0); } 18% { transform: translateY(-3.2px); }
+    36% { transform: translateY(0); } 48% { transform: translateY(-1px); } 60%,100% { transform: translateY(0); } }
+
+  /* 犯困：眯眼慢摇 + 冒 z */
+  #pet.sleepy .p-body { animation: pt-doze 4.5s ease-in-out infinite; }
+  #pet.sleepy .p-eyes { animation: none; transform: scaleY(.18); }
+  #pet.sleepy .p-zzz g { animation: pt-z 3.2s ease-out infinite; }
+  #pet.sleepy .p-zzz g:nth-child(2) { animation-delay: 1.6s; }
+  @keyframes pt-doze { 0%,100% { transform: translateY(.6px) rotate(-1.5deg); } 50% { transform: translateY(1px) rotate(1deg); } }
+  @keyframes pt-z { 0% { transform: translateY(1px); opacity: 0; } 25% { opacity: .9; }
+    100% { transform: translateY(-2.5px); opacity: 0; } }
+
+  /* 害羞：脸红 + 扭头小幅摇 */
+  #pet.shy .p-body { animation: pt-bashful 2.2s ease-in-out infinite; }
+  #pet.shy .p-eyes { animation: none; transform: translateX(.7px); }
+  @keyframes pt-bashful { 0%,100% { transform: rotate(-3deg); } 50% { transform: rotate(-1deg); } }
+
+  /* 盯着看（用户打字中）：趴低凑近，眼睛往下瞟着输入框 */
+  #pet.watch .p-body { animation: pt-peer 2s ease-in-out infinite; }
+  #pet.watch .p-eyes { animation: none; transform: translateY(.7px); }
+  @keyframes pt-peer { 0%,100% { transform: translateY(.6px); } 50% { transform: translateY(.9px); } }
+
+  /* 干活（AI 托管操作电脑）：两只钳子轮流敲，身子跟着一顿一顿 */
+  #pet.work .p-body { animation: pt-toil 1s linear infinite; }
+  #pet.work .p-cl { animation: pt-hammer-l 1s linear infinite; }
+  #pet.work .p-cr { animation: pt-hammer-r 1s linear infinite; }
+  @keyframes pt-toil { 0%,50%,100% { transform: translateY(0); } 25%,75% { transform: translateY(.4px); } }
+  @keyframes pt-hammer-l { 0%,50%,100% { transform: rotate(0); } 25% { transform: rotate(38deg); } }
+  @keyframes pt-hammer-r { 0%,50%,100% { transform: rotate(0); } 75% { transform: rotate(-38deg); } }
+
+  /* 打游戏（AI 操作游戏中）：眼睛瞪大，双钳搓手柄式狂按，身子兴奋摇 */
+  #pet.game .p-body { animation: pt-groove .7s ease-in-out infinite; }
+  #pet.game .p-eyes { animation: none; transform: scale(1.15); }
+  #pet.game .p-cl { animation: pt-mash-l .35s linear infinite; }
+  #pet.game .p-cr { animation: pt-mash-r .35s linear infinite; }
+  @keyframes pt-groove { 0%,100% { transform: rotate(-1.5deg); } 50% { transform: rotate(1.5deg); } }
+  @keyframes pt-mash-l { 0%,100% { transform: rotate(14deg); } 50% { transform: rotate(26deg); } }
+  @keyframes pt-mash-r { 0%,100% { transform: rotate(-26deg); } 50% { transform: rotate(-14deg); } }
+</style>
+<style id="themeCss"></style>
+</head>
+<body>
+<div id="petzone">
+  <!-- 像素小螃蟹（Clawd 体格）：趴在对话卡上沿，会散步、会看心情换表情，点它=拍拍 -->
+  <div id="pet" class="idle" title="小螃蟹（点一下=拍拍）">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 0 23 16">
+      <rect class="p-shad" x="3" y="15" width="9" height=".9" fill="var(--ink)" opacity=".15"/>
+      <g class="p-body">
+        <!-- 步足：两组交替出脚 -->
+        <g fill="var(--pet-body)">
+          <g class="p-la"><rect x="3" y="13" width="1" height="2"/><rect x="9" y="13" width="1" height="2"/></g>
+          <g class="p-lb"><rect x="5" y="13" width="1" height="2"/><rect x="11" y="13" width="1" height="2"/></g>
+        </g>
+        <!-- 左右钳：肩关节可转 -->
+        <g class="p-cl" fill="var(--pet-body)">
+          <rect x="0" y="9" width="2" height="2"/>
+          <rect x="-2.2" y="7.2" width="1.2" height="4.2"/>
+          <rect x="-1.2" y="7.2" width="1.8" height="1.2"/>
+          <rect x="-1.2" y="10.2" width="1.8" height="1.2"/>
+        </g>
+        <g class="p-cr" fill="var(--pet-body)">
+          <rect x="13" y="9" width="2" height="2"/>
+          <rect x="16" y="7.2" width="1.2" height="4.2"/>
+          <rect x="14.2" y="7.2" width="1.8" height="1.2"/>
+          <rect x="14.2" y="10.2" width="1.8" height="1.2"/>
+        </g>
+        <!-- 壳 -->
+        <rect x="2" y="6" width="11" height="7" fill="var(--pet-body)"/>
+        <!-- 脸红（贴贴/害羞才亮） -->
+        <g class="p-blush p-x" fill="#d8555a" opacity=".8">
+          <rect x="3" y="10.6" width="1.8" height=".9"/><rect x="10.2" y="10.6" width="1.8" height=".9"/>
+        </g>
+        <g class="p-eyes" fill="#141414">
+          <rect x="4" y="8" width="1" height="2"/><rect x="10" y="8" width="1" height="2"/>
+        </g>
+        <rect x="6.4" y="10.8" width="2.2" height="1" rx=".5" fill="#7a2230"/>
+        <!-- 眼泪（难过） -->
+        <rect class="p-tear p-x" x="10.6" y="10.2" width="1" height="1.4" rx=".3" fill="#7ec3e8"/>
+      </g>
+      <!-- 头顶道具们：思考点点 / 小心心 / 青筋 / 叹号 / 瞌睡 z -->
+      <g class="p-dots p-x" fill="var(--sub)">
+        <rect x="13" y="3.4" width="1" height="1"/><rect x="15" y="2.2" width="1" height="1"/><rect x="17" y="1" width="1" height="1"/>
+      </g>
+      <g class="p-hearts p-x" fill="#e25563">
+        <g transform="translate(4,2)"><rect x="0" y="0" width="1" height="1"/><rect x="2" y="0" width="1" height="1"/><rect x="0" y="1" width="3" height="1"/><rect x="1" y="2" width="1" height="1"/></g>
+        <g transform="translate(10.5,3) scale(.8)"><rect x="0" y="0" width="1" height="1"/><rect x="2" y="0" width="1" height="1"/><rect x="0" y="1" width="3" height="1"/><rect x="1" y="2" width="1" height="1"/></g>
+      </g>
+      <g class="p-mark p-x" fill="#d64545">
+        <rect x="12.6" y="2.2" width="1.1" height="1.1"/><rect x="14.3" y="2.2" width="1.1" height="1.1"/>
+        <rect x="12.6" y="3.9" width="1.1" height="1.1"/><rect x="14.3" y="3.9" width="1.1" height="1.1"/>
+      </g>
+      <g class="p-ex p-x" fill="#d64545">
+        <rect x="7" y="1" width="1.2" height="2.6"/><rect x="7" y="4.4" width="1.2" height="1.2"/>
+      </g>
+      <g class="p-zzz p-x" fill="var(--sub)">
+        <g transform="translate(13.6,2.4)"><rect x="0" y="0" width="1.8" height=".55"/><rect x=".65" y=".75" width=".55" height=".55"/><rect x="0" y="1.5" width="1.8" height=".55"/></g>
+        <g transform="translate(16.2,.6) scale(.75)"><rect x="0" y="0" width="1.8" height=".55"/><rect x=".65" y=".75" width=".55" height=".55"/><rect x="0" y="1.5" width="1.8" height=".55"/></g>
+      </g>
+    </svg>
+  </div>
+</div>
+<div id="card">
+  <div id="head">
+    <span class="name" id="aiName">TA</span>
+    <span class="state" id="state">连接中</span>
+    <button class="act" id="tkBtn" style="display:none; padding:3px 8px; font-size:11px" title="让TA接管你的鼠标；操作时你先别碰鼠标。按 Esc 或再点一下退出">托管</button>
+    <button class="act" id="fsExit" style="display:none; padding:3px 8px; font-size:11px" title="也可以按全屏快捷键退出">退出全屏</button>
+  </div>
+  <div id="msgs"></div>
+  <div id="typing">TA正在说…</div>
+  <div id="pend">
+    <img id="pendImg">
+    <span class="note">截好了，配句话再点发送</span>
+    <button id="pendCancel">取消</button>
+  </div>
+  <div id="inputbar">
+    <input id="inp" placeholder="说点什么…" maxlength="2000">
+    <button class="act" id="btnSend">发送</button>
+    <button class="act" id="btnShot" title="截下取景框里的画面发给TA">截图</button>
+  </div>
+
+  <div id="setup">
+    <h3>取景框设置</h3>
+    <label>服务器</label>
+    <input id="setServer" placeholder="wss://你的服务器地址">
+    <label>口令（和手机上登录用的一样）</label>
+    <input id="setToken" type="password">
+    <label>TA的名字（界面文案里怎么称呼对面的 AI，留空显示「TA」）</label>
+    <input id="setName" placeholder="TA">
+    <label>气泡分割符（识别到就切成多个气泡，留空不分割）</label>
+    <input id="setSplit" placeholder="|||">
+    <label>标签剥离（空格分隔；成对标签连内容一起剥）</label>
+    <input id="setStrip" placeholder="【记忆】 【心情】 <think>">
+    <label>全屏快捷键（系统级；如 Ctrl+Alt+F、F9；留空关闭）</label>
+    <input id="setHotkey" placeholder="Ctrl+Alt+F">
+    <label>主题（JSON 文件，写法见 THEME.md）</label>
+    <div class="btns" style="margin-top:0">
+      <button class="act" id="thImport">导入主题</button>
+      <button class="act" id="thExport">导出主题</button>
+      <button class="act" id="thReset">恢复默认</button>
+    </div>
+    <div class="hint">保存后会自动重连。取景框摆在哪、开多大，AI 就只能看到那一块。</div>
+    <div class="btns">
+      <button class="act" id="setSave">保存</button>
+      <button class="act" id="setCancel">返回</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // 昼夜 + 主题（与 frame.html 同一套逻辑）：主题变量写到 <html> 行内样式，盖过默认值
+  let themeObj = null;
+  function applyTheme() {
+    const h = new Date().getHours();
+    const night = h < 7 || h >= 19;
+    document.documentElement.classList.toggle("night", night);
+    const root = document.documentElement;
+    for (const k of [...root.style]) if (k.startsWith("--")) root.style.removeProperty(k);
+    const sec = themeObj ? ((night ? themeObj.night : themeObj.day) || themeObj.day || {}) : {};
+    for (const [k, v] of Object.entries(sec)) if (k.startsWith("--")) root.style.setProperty(k, String(v));
+    document.getElementById("themeCss").textContent = (themeObj && themeObj.css) || "";
+  }
+  vf.onTheme((t) => { themeObj = t; applyTheme(); });
+  applyTheme(); setInterval(applyTheme, 60000);
+
+  const $ = (id) => document.getElementById(id);
+  const msgs = $("msgs");
+  const MAX_ROWS = 200;   // DOM 里最多留这么多条，历史往上滚着看
+  const INIT_ROWS = 20;   // 启动时回放的条数
+
+  // ── 小螃蟹情绪引擎 ──
+  // 平时 idle（发呆+偶尔散步）；AI 打字→think；说完话按内容配表情；用户打字→凑近盯着看；
+  // 托管操作→抡钳干活；玩游戏→双钳狂搓；闪光→吓一跳；报错/掉线→蔫；夜里冷场 5 分钟→睡着。表情到点自己回 idle。
+  const pet = $("pet"), petzone = $("petzone");
+  const PET_EMOTES = ["idle", "walk", "think", "happy", "love", "sad", "angry", "surprised", "sleepy", "shy", "watch", "work", "game"];
+  const PET_RULES = [   // 顺序即优先级（命中数相同先者赢）
+    ["love",      /想你|爱你|喜欢你|好喜欢|亲亲|抱抱|贴贴|摸摸|蹭蹭|心动|么么|捧脸/g],
+    ["shy",       /害羞|脸红|不好意思|羞死|扭捏/g],
+    ["angry",     /生气|气死|气鼓鼓|哼！|哼哼|讨厌|不理你|凶/g],
+    ["sad",       /难过|委屈|呜呜|伤心|想哭|对不起|抱歉|唉|叹气|孤单|寂寞|失落/g],
+    ["surprised", /！？|？！|居然|竟然|惊了|吓|天哪|天啊|咦|欸？|不会吧/g],
+    ["sleepy",    /晚安|好困|想睡|睡觉|呼噜|哈欠|做梦|梦里/g],
+    ["happy",     /哈哈|嘿嘿|嘻嘻|开心|高兴|太好了|好耶|耶|真棒|好棒|好玩|有趣|期待|喵/g],
+  ];
+  let petState = "idle", petTimer = null, petSticky = false, petLastAct = Date.now();
+  let petX = 24, petWalkRaf = null;
+  pet.style.left = petX + "px";
+
+  function petApply(s) {
+    petState = s;
+    for (const e of PET_EMOTES) pet.classList.toggle(e, e === s);
+  }
+  function petStopWalk() {
+    if (petWalkRaf) { cancelAnimationFrame(petWalkRaf); petWalkRaf = null; }
+  }
+  // 换表情；ms 到点回 idle，ms=0 常驻（挂机睡觉/掉线蔫着，等下一个事件来换）
+  function petSet(s, ms) {
+    petStopWalk();
+    if (petTimer) { clearTimeout(petTimer); petTimer = null; }
+    petApply(s);
+    petSticky = !ms;
+    if (ms) petTimer = setTimeout(() => petApply("idle"), ms);
+  }
+  function petEvent(s, ms) { petLastAct = Date.now(); petSet(s, ms); }
+  // 读一段话，挑最像的心情
+  function petReact(text) {
+    const t = String(text || "");
+    let best = null, bestN = 0;
+    for (const [s, re] of PET_RULES) {
+      const n = (t.match(re) || []).length;
+      if (n > bestN) { bestN = n; best = s; }
+    }
+    if (best) petEvent(best, 9000);
+    else petEvent("idle", 0), petSticky = false;
+  }
+  // 散步：横着挪，到地方就站定
+  function petWalkTo(x) {
+    petStopWalk();
+    const from = petX, dist = x - from;
+    if (Math.abs(dist) < 8) return;
+    pet.classList.toggle("flip", dist > 0);
+    petApply("walk");
+    const dur = Math.abs(dist) / 0.026;   // 26px/s，螃蟹步速
+    const t0 = performance.now();
+    const step = (t) => {
+      if (petState !== "walk") { petWalkRaf = null; return; }
+      const k = Math.min(1, (t - t0) / dur);
+      petX = from + dist * k;
+      pet.style.left = petX.toFixed(1) + "px";
+      if (k < 1) petWalkRaf = requestAnimationFrame(step);
+      else { petWalkRaf = null; petApply("idle"); }
+    };
+    petWalkRaf = requestAnimationFrame(step);
+  }
+  setInterval(() => {
+    const night = document.documentElement.classList.contains("night");
+    if (petState === "idle" && night && Date.now() - petLastAct > 5 * 60000) { petSet("sleepy", 0); return; }
+    if (petState !== "idle" || Math.random() > 0.3) return;
+    const max = Math.max(12, petzone.clientWidth - 74);
+    petWalkTo(8 + Math.random() * (max - 8));
+  }, 5000);
+  // 拍拍它
+  pet.addEventListener("click", () => petEvent("love", 2600));
+  // 用户打字中：凑过来盯着看。只从发呆/散步切入，不打断正在演的表情；每敲一下续 2.6s
+  $("inp").addEventListener("input", () => {
+    if (petState === "idle" || petState === "walk" || petState === "watch") petEvent("watch", 2600);
+  });
+
+  // ── 公用渲染规则（设置里可改）：标签剥离 + 气泡分割 ──
+  let stripRules = [], splitSep = "|||";
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  function buildRender() {
+    const r = conf.render || {};
+    splitSep = r.split || "";
+    stripRules = [];
+    for (const raw of String(r.strip || "").split(/[,，、\s]+/).filter(Boolean)) {
+      let m;
+      if ((m = raw.match(/^【(.+)】$/)))        // 【记忆】→ 成对连内容剥 + 落单标签剥
+        stripRules.push(new RegExp("【" + escRe(m[1]) + "】[\\s\\S]*?【/" + escRe(m[1]) + "】|【/?" + escRe(m[1]) + "】", "g"));
+      else if ((m = raw.match(/^<(.+)>$/)))     // <think> → 同上，尖括号风格
+        stripRules.push(new RegExp("<" + escRe(m[1]) + ">[\\s\\S]*?</" + escRe(m[1]) + ">|</?" + escRe(m[1]) + ">", "g"));
+      else                                       // 其他：按字面剥
+        stripRules.push(new RegExp(escRe(raw), "g"));
+    }
+  }
+  function cleanAi(t) {
+    t = String(t || "");
+    for (const r of stripRules) t = t.replace(r, "");
+    return t.replace(/\n{3,}/g, "\n\n").trim();
+  }
+  // AI 消息 → 气泡数组（剥完标签再按分割符切）
+  function aiSegments(t) {
+    const c = cleanAi(t);
+    if (!splitSep) return c ? [c] : [];
+    return c.split(splitSep).map((s) => s.trim()).filter(Boolean);
+  }
+
+  // 行内斜体：*文字* → <em>（不跨行、星号内侧不贴空格——CommonMark 同款，防止孤星号隔空配对）。
+  // DOM 拼装，不走 innerHTML，没有注入面
+  function renderInline(el, t) {
+    const re = /\*(\S(?:[^*\n]*\S)?)\*/g;
+    let last = 0, m;
+    while ((m = re.exec(t))) {
+      if (m.index > last) el.appendChild(document.createTextNode(t.slice(last, m.index)));
+      const em = document.createElement("em");
+      em.textContent = m[1];
+      el.appendChild(em);
+      last = m.index + m[0].length;
+    }
+    if (last < t.length) el.appendChild(document.createTextNode(t.slice(last)));
+  }
+
+  function addRow(who, text, img) {
+    if (!text && !img) return;
+    const row = document.createElement("div");
+    if (who === "sys" && !img) { row.className = "sys"; row.textContent = text; }
+    else {
+      row.className = "row " + (who === "sys" ? "ai" : who);
+      const b = document.createElement("div");
+      b.className = "bubble";
+      if (text) renderInline(b, text);
+      if (img) { const im = document.createElement("img"); im.src = "data:image/jpeg;base64," + img; b.appendChild(im); }
+      row.appendChild(b);
+    }
+    msgs.appendChild(row);
+    while (msgs.children.length > MAX_ROWS) msgs.removeChild(msgs.firstChild);
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  // ── WebSocket ──
+  let ws = null, wsTimer = null, closedByUs = false, conf = { server: "", token: "" };
+  function setState(txt, cls) {
+    $("state").textContent = txt; vf.connState(cls);
+    if (cls === "bad") petSet("sad", 0);                        // 掉线/口令不对：蔫着
+    else if (petSticky && petState === "sad") petSet("idle", 0); // 缓过来了
+  }
+
+  // 对面 AI 的显示名（设置里可改）：header、输入中提示、按钮 tooltip 一起换
+  const aiName = () => (conf.aiName || "").trim() || "TA";
+  function applyAiName() {
+    const n = aiName();
+    $("aiName").textContent = n;
+    $("typing").textContent = n + "正在说…";
+    $("tkBtn").title = "让" + n + "接管你的鼠标；操作时你先别碰鼠标。按 Esc 或再点一下退出";
+    $("btnShot").title = "截下取景框里的画面发给" + n;
+  }
+
+  function connect() {
+    if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
+    if (!conf.server || !conf.token) { setState("先设置口令", "bad"); openSetup(); return; }
+    setState("连接中", "wait");
+    try { ws = new WebSocket(conf.server + "/?token=" + encodeURIComponent(conf.token)); }
+    catch (e) { setState("地址不对", "bad"); return; }
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "vf_hello" }));
+      setState("在线", "ok");
+    };
+    ws.onclose = (ev) => {
+      ws = null;
+      $("typing").classList.remove("on");
+      if (closedByUs) { closedByUs = false; connect(); return; }
+      if (ev.code === 4001) { setState("口令不对", "bad"); openSetup(); return; }
+      setState("重连中", "wait");
+      wsTimer = setTimeout(connect, 4000);
+    };
+    ws.onerror = () => {};
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch (_) { return; }
+      handleMsg(m);
+    };
+  }
+
+  function wsSend(o) {
+    if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; }
+    addRow("sys", "还没连上，稍等一下");
+    return false;
+  }
+
+  function handleMsg(m) {
+    if (m.subMode) return;   // 子窗口（共读/群聊等）的事不进小面板
+    if (m.type === "history" && Array.isArray(m.items)) {
+      msgs.innerHTML = "";
+      const rows = m.items.filter((it) => (it.who === "me" || it.who === "ai") && !it.subType && (it.text || it.file));
+      for (const it of rows.slice(-INIT_ROWS)) {
+        if (it.who === "ai") for (const seg of aiSegments(it.text)) addRow("ai", seg);
+        else addRow("me", it.text || (it.file ? "[图片]" : ""));
+      }
+    } else if (m.type === "delta") {
+      $("typing").classList.add("on");
+      if (petState !== "think") petEvent("think", 0);   // 他在说话：小螃蟹歪头等
+    } else if (m.type === "done") {
+      $("typing").classList.remove("on");
+      for (const seg of aiSegments(m.text)) addRow("ai", seg);
+      petReact(cleanAi(m.text));                        // 听完内容配表情
+    } else if (m.type === "status") {
+      if (m.state === "ready") setState("在线", "ok");
+      else if (m.state === "restarting") setState("整理思绪中", "wait");
+      else if (m.state === "starting") setState("启动中", "wait");
+      else if (m.state === "ended") setState("已结束", "bad");
+    } else if (m.type === "resend") {
+      addRow("me", m.text);
+    } else if (m.type === "vf_capture") {
+      // AI 主动看一眼：截图 → 闪光 → 送回；把它看到的画面贴出来，你随时能核对
+      vf.capture().then((r) => {
+        wsSend({ type: "vf_shot", requestId: m.requestId, data: r.ok ? r.data : undefined, error: r.ok ? undefined : r.error });
+        if (r.ok) {
+          vf.flash();
+          addRow("sys", m.mode === "keep" ? aiName() + "截了一张留档：" : aiName() + "看了一眼：", r.data);
+        } else {
+          addRow("sys", aiName() + "想看一眼，但截图失败了：" + r.error);
+        }
+      });
+    } else if (m.type === "vf_action") {
+      // 托管：AI 动鼠标 → 操作完自动补一张截图送回；每一步都在这留一条记录
+      petEvent("work", 5000);   // 操作期间：干活
+      vf.action(m.action).then((r) => {
+        wsSend({ type: "vf_shot", requestId: m.requestId, data: r.ok ? r.data : undefined, error: r.ok ? undefined : r.error, desc: r.desc });
+        if (r.ok) {
+          vf.flash();
+          addRow("sys", "托管：" + aiName() + (r.desc || "操作了一下"), r.data);
+        } else {
+          addRow("sys", aiName() + "想操作（" + ((m.action && m.action.type) || "?") + "），但没成功：" + r.error);
+        }
+      });
+    } else if (m.type === "error") {
+      addRow("sys", m.message || "出错了");
+      petEvent("sad", 6000);
+    }
+  }
+
+  // ── 发送：截图先暂存，配好文字点发送才一起发出 ──
+  let pendingShot = null;
+  function setPending(b64) {
+    pendingShot = b64;
+    if (b64) { $("pendImg").src = "data:image/jpeg;base64," + b64; $("pend").classList.add("on"); }
+    else { $("pendImg").src = ""; $("pend").classList.remove("on"); }
+  }
+  $("pendCancel").addEventListener("click", () => setPending(null));
+
+  function doSend() {
+    const t = $("inp").value.trim();
+    if (pendingShot) {
+      const stamp = new Date();
+      const hh = String(stamp.getHours()).padStart(2, "0"), mm = String(stamp.getMinutes()).padStart(2, "0");
+      if (wsSend({ type: "file", name: "取景框截图-" + hh + mm + ".jpg", mime: "image/jpeg", data: pendingShot, text: t || undefined })) {
+        vf.flash();
+        addRow("me", t, pendingShot);
+        setPending(null);
+        $("inp").value = "";
+      }
+      return;
+    }
+    if (!t) return;
+    if (wsSend({ type: "chat", content: t })) {
+      addRow("me", t);
+      $("inp").value = "";
+      petEvent("happy", 1500);   // 收到你的话，先高兴一下
+    }
+  }
+  $("btnSend").addEventListener("click", doSend);
+  $("inp").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) doSend(); });
+
+  // 截图键 = 只截取暂存，不发送
+  let shotBusy = false;
+  async function shotStage() {
+    if (shotBusy) return;
+    shotBusy = true;
+    try {
+      const r = await vf.capture();
+      if (!r.ok) { addRow("sys", "截图失败：" + r.error); return; }
+      setPending(r.data);
+      $("inp").focus();
+    } finally { shotBusy = false; }
+  }
+  $("btnShot").addEventListener("click", shotStage);
+  vf.onPanelCmd((cmd) => {
+    if (cmd === "shot") shotStage();
+    if (cmd === "settings") openSetup();
+  });
+
+  // 闪光（顺便把小螃蟹吓一跳）
+  vf.onFlash(() => {
+    const c = $("card");
+    c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash");
+    // 干活/打游戏时的闪光是它自己操作后的补截图，不算被吓
+    if (petState !== "work" && petState !== "game") petEvent("surprised", 2400);
+  });
+
+  // 锁定时面板头部拖动也失效（面板本身照常可点、可打字）
+  let locked = false;
+  vf.onLock((v) => { locked = v; });
+
+  // 全屏时取景框整个隐身，退出入口 = 头部按钮 / 全局快捷键
+  vf.onFullscreen((v) => {
+    $("fsExit").style.display = v ? "" : "none";
+    $("tkBtn").style.display = v ? "" : "none";   // 托管入口只在全屏时出现
+  });
+  $("fsExit").addEventListener("click", () => vf.fullscreenSet(false));
+
+  // ── 托管：AI 接管鼠标。开关在这，缰绳在用户手里 ──
+  let tkOn = false;
+  $("tkBtn").addEventListener("click", async () => {
+    const r = await vf.takeoverSet(!tkOn);
+    if (r && r.error) addRow("sys", "托管没开起来：" + r.error);
+  });
+  vf.onTakeover((s) => {
+    if (!!s.on === tkOn) return;
+    tkOn = !!s.on;
+    $("tkBtn").classList.toggle("on", tkOn);
+    addRow("sys", tkOn
+      ? "托管已开启，" + aiName() + "现在可以操作了。操作时你先别碰鼠标（碰了也不影响落点，但会和" + aiName() + "的光标打架）。按 Esc 或再点「托管」随时停。"
+      : "托管已关闭" + (s.reason ? "（" + s.reason + "）" : ""));
+  });
+
+  // 面板头部拖动 = 整套（框+面板）一起走；全屏时只移面板自己（主进程路由）。
+  // 增量按帧合批（rAF），别每次微动都发 IPC——那是卡顿之源
+  $("head").addEventListener("pointerdown", (e) => {
+    if (e.target.tagName === "BUTTON") return;
+    if (locked) return;
+    e.preventDefault();
+    $("head").setPointerCapture(e.pointerId);
+    let lx = e.screenX, ly = e.screenY, accX = 0, accY = 0, scheduled = false;
+    const flush = () => {
+      scheduled = false;
+      if (accX || accY) { vf.moveBy(accX, accY); accX = 0; accY = 0; }
+    };
+    const move = (ev) => {
+      accX += ev.screenX - lx; accY += ev.screenY - ly;
+      lx = ev.screenX; ly = ev.screenY;
+      if (!scheduled) { scheduled = true; requestAnimationFrame(flush); }
+    };
+    const up = () => {
+      $("head").removeEventListener("pointermove", move);
+      $("head").removeEventListener("pointerup", up);
+      flush();
+      vf.geomSave();
+    };
+    $("head").addEventListener("pointermove", move);
+    $("head").addEventListener("pointerup", up);
+  });
+
+  // ── 设置 ──
+  function openSetup() {
+    $("setServer").value = conf.server;
+    $("setToken").value = conf.token;
+    $("setName").value = conf.aiName || "";
+    $("setSplit").value = (conf.render && conf.render.split) || "";
+    $("setStrip").value = (conf.render && conf.render.strip) || "";
+    $("setHotkey").value = conf.hotkeyFull || "";
+    $("setup").classList.add("on");
+  }
+  $("setCancel").addEventListener("click", () => $("setup").classList.remove("on"));
+  $("thImport").addEventListener("click", async () => {
+    const r = await vf.themeImport();
+    if (r && r.error) addRow("sys", "主题导入失败：" + r.error);
+    else if (r && r.ok) addRow("sys", "主题已应用" + (r.name ? "：" + r.name : ""));
+  });
+  $("thExport").addEventListener("click", async () => {
+    const r = await vf.themeExport();
+    if (r && r.ok) addRow("sys", "主题已导出到 " + r.path);
+  });
+  $("thReset").addEventListener("click", () => vf.themeReset());
+  $("setSave").addEventListener("click", async () => {
+    conf.server = $("setServer").value.trim().replace(/\/+$/, "") || conf.server;
+    conf.token = $("setToken").value.trim();
+    conf.aiName = $("setName").value.trim();
+    conf.render = { split: $("setSplit").value.trim(), strip: $("setStrip").value.trim() };
+    conf.hotkeyFull = $("setHotkey").value.trim();
+    const r = await vf.confSet({ server: conf.server, token: conf.token, aiName: conf.aiName, render: conf.render, hotkeyFull: conf.hotkeyFull });
+    buildRender();
+    applyAiName();
+    $("setup").classList.remove("on");
+    if (r && r.hotkeyOk === false) addRow("sys", "快捷键没注册上（格式不对或被别的程序占了），试试换一个");
+    if (ws) { closedByUs = true; ws.close(); } else connect();
+  });
+
+  // 启动
+  vf.confGet().then((c) => {
+    conf = c;
+    buildRender();
+    applyAiName();
+    connect();
+  });
+</script>
+</body>
+</html>
