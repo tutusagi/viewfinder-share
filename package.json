@@ -4,7 +4,7 @@
   "description": "桌面取景框：AI 能看到的那一小块屏幕",
   "main": "main.js",
   "author": "tutusagi",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win",
