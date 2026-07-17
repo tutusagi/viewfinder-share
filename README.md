@@ -89,4 +89,4 @@ MCP 工具描述**故意极简**（三个工具各一行，总共不到 100 toke
 
 ## License
 
-本项目采用 [MIT License](LICENSE)。
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)。允许非商业使用、修改和分发；商业使用须另行取得授权。
